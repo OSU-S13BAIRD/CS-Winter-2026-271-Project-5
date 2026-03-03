@@ -1,23 +1,28 @@
 TITLE Chaotic Temperature Statistics     (Proj5_bairsamu.asm)
 ; Author: Samuel Baird
-; Last Modified: 02/26/2026
+; Last Modified: 03/02/2026
 ; OSU email address: bairsamu@oregonstate.edu
 ; Course number/section:   CS271 Section 400
 ; Project Number: 5                Due Date: 03/01/2026
 ; Description: Generates DAYS_MEASURED * TEMPS_PER_DAY random temperature readings
-;              in the range [MIN_TEMP, MAX_TEMP], stores them in a flat array, then
-;              finds the daily high and low for each day, computes the truncated
-;              average of those daily highs and lows, and displays everything with
-;              descriptive titles. All sub-tasks are broken into separate procedures
-;              that communicate exclusively through stack-passed parameters.
+;              on a diurnal cycle (low at start/end of day, high at midday) in the
+;              range [MIN_TEMP, MAX_TEMP], stores them in a flat array, then finds
+;              the daily high and low for each day, computes the truncated average
+;              of those daily highs and lows, and displays everything with
+;              descriptive titles. The program loops until the user chooses to quit.
+;              All sub-tasks are broken into separate procedures that communicate
+;              exclusively through stack-passed parameters.
 ;
-; **EC: Temperatures are displayed column-by-column (each column = one day) rather
-;       than the default row-per-day layout, so the table reads left-to-right by day.
+; **EC1: Temperatures are displayed column-by-column (each column = one day) rather
+;        than the default row-per-day layout.
+; **EC2: Temperatures are generated on a diurnal cycle -- low at day start/end,
+;        peaking near midday -- with random variation. Days chain together so the
+;        next day starts where the previous day ended.
 
 INCLUDE Irvine32.inc
 
 ; -----------------------------------------------------------------------
-; Global Constants  (may be used by name in any procedure)
+; Global Constants
 ; -----------------------------------------------------------------------
 DAYS_MEASURED   EQU  14
 TEMPS_PER_DAY   EQU  11
@@ -25,32 +30,40 @@ MIN_TEMP        EQU  20
 MAX_TEMP        EQU  80
 ARRAYSIZE       EQU  DAYS_MEASURED * TEMPS_PER_DAY   ; 154 total readings
 
+; Diurnal cycle constants
+TEMP_RANGE      EQU  (MAX_TEMP - MIN_TEMP)           ; 60
+MID_SLOT        EQU  (TEMPS_PER_DAY / 2)             ; slot index of daily peak (5)
+MAX_DELTA       EQU  6                               ; max random step per slot
+
 ; -----------------------------------------------------------------------
 .data
 ; -----------------------------------------------------------------------
 
 ; -- Introduction strings --
 intro1      BYTE  "Welcome to Chaotic Temperature Statistics, by Samuel Baird", 0
-intro2      BYTE  "**EC: Temperature array is displayed column-by-column (one column per day).", 0
-intro3      BYTE  "This program generates temperature readings -- one per time slot per day --", 0
-intro4      BYTE  "for multiple days (amounts controlled by CONSTANTs). It then computes the", 0
-intro5      BYTE  "daily high and low temperatures and their truncated averages, and displays", 0
-intro6      BYTE  "all results neatly with descriptive titles.", 0
+intro2      BYTE  "**EC: Temperature array is displayed column-by-column (each column = one day).", 0
+intro3      BYTE  "**EC: Temperatures are generated such that each day starts cold, gradually", 0
+intro4      BYTE  "     grows warmer until around noon, and then becomes colder until the end", 0
+intro5      BYTE  "     of the day. Each day chains from where the previous day ended.", 0
+intro6      BYTE  "This program generates a series of temperature readings, X per day for Y days", 0
+intro7      BYTE  "(depending on CONSTANTs), and performs basic statistics: daily high and low", 0
+intro8      BYTE  "and average high and low temps. Results are printed with descriptive titles.", 0
 
 ; -- Array / section title strings --
-titleAll    BYTE  "The temperature readings are as follows (one column is one day):", 0
-titleHighs  BYTE  "The highest temperature of each day was:", 0
-titleLows   BYTE  "The lowest temperature of each day was:", 0
-titleAvgH   BYTE  "The (truncated) average high temperature was: ", 0
-titleAvgL   BYTE  "The (truncated) average low temperature was: ", 0
+titleAll    BYTE  "Temperature readings (one column = one day):", 0
+titleHighs  BYTE  "Daily high temperatures:", 0
+titleLows   BYTE  "Daily low temperatures:", 0
+titleAvgH   BYTE  "Truncated average high temperature: ", 0
+titleAvgL   BYTE  "Truncated average low temperature:  ", 0
 
-; -- Farewell --
+; -- Loop prompt --
+promptAgain BYTE  "Run again? (y/n): ", 0
 farewell    BYTE  "Thanks for using Chaotic Temperature Statistics. Goodbye!", 0
 
 ; -- Arrays --
-tempArray   DWORD  ARRAYSIZE DUP(?)          ; all temperature readings (row-major: row=day)
-dailyHighs  DWORD  DAYS_MEASURED DUP(?)      ; max temp per day
-dailyLows   DWORD  DAYS_MEASURED DUP(?)      ; min temp per day
+tempArray   DWORD  ARRAYSIZE DUP(?)
+dailyHighs  DWORD  DAYS_MEASURED DUP(?)
+dailyLows   DWORD  DAYS_MEASURED DUP(?)
 
 ; -- Averages --
 averageHigh DWORD  ?
@@ -65,21 +78,19 @@ twoSpaces   BYTE  "  ", 0
 
 ; =======================================================================
 ; Procedure: main
-; Description: Entry point. Seeds the RNG, then orchestrates all
-;              sub-procedure calls in order: greeting -> generate ->
-;              find highs/lows -> calculate averages -> display all ->
-;              farewell. No data-segment variables are referenced by
-;              name except to obtain their OFFSETs / values for push.
+; Description: Entry point. Seeds the RNG once, then loops:
+;              greeting -> generate -> highs/lows -> averages -> display
+;              -> ask user to continue. Exits when user enters 'n'/'N'.
 ; Receives:   nothing
 ; Returns:    nothing
-; Pre-conditions:  Data segment arrays allocated.
-; Post-conditions: All output printed; program exits cleanly.
-; Registers changed: EAX, EDX (used directly in main body)
+; Registers changed: EAX, EDX
 ; =======================================================================
 main PROC
-    call  Randomize          ; seed the pseudo-random number generator once
+    call  Randomize
 
-    ; --- printGreeting(intro1..intro6) ---
+    ; --- printGreeting ---
+    push  OFFSET intro8
+    push  OFFSET intro7
     push  OFFSET intro6
     push  OFFSET intro5
     push  OFFSET intro4
@@ -88,62 +99,74 @@ main PROC
     push  OFFSET intro1
     call  printGreeting
 
-    ; --- generateTemperatures(tempArray) ---
+mainLoop:
+    ; --- generateTemperatures (diurnal EC2) ---
     push  OFFSET tempArray
     call  generateTemperatures
 
-    ; --- findDailyHighs(tempArray, dailyHighs) ---
+    ; --- findDailyHighs ---
     push  OFFSET dailyHighs
     push  OFFSET tempArray
     call  findDailyHighs
 
-    ; --- findDailyLows(tempArray, dailyLows) ---
+    ; --- findDailyLows ---
     push  OFFSET dailyLows
     push  OFFSET tempArray
     call  findDailyLows
 
-    ; --- calcAverageLowHighTemps(dailyHighs, dailyLows, averageHigh, averageLow) ---
+    ; --- calcAverageLowHighTemps ---
     push  OFFSET averageLow
     push  OFFSET averageHigh
     push  OFFSET dailyLows
     push  OFFSET dailyHighs
     call  calcAverageLowHighTemps
 
-    ; --- displayTempArray: full grid (EC: column-per-day orientation)
-    ;     rows = TEMPS_PER_DAY, columns = DAYS_MEASURED
+    ; --- displayTempArray: full grid (EC1 transposed) ---
     push  DAYS_MEASURED
     push  TEMPS_PER_DAY
     push  OFFSET tempArray
     push  OFFSET titleAll
     call  displayTempArray
 
-    ; --- displayTempArray: daily highs (1 row x DAYS_MEASURED columns) ---
+    ; --- displayTempArray: daily highs ---
     push  DAYS_MEASURED
     push  1
     push  OFFSET dailyHighs
     push  OFFSET titleHighs
     call  displayTempArray
 
-    ; --- displayTempArray: daily lows (1 row x DAYS_MEASURED columns) ---
+    ; --- displayTempArray: daily lows ---
     push  DAYS_MEASURED
     push  1
     push  OFFSET dailyLows
     push  OFFSET titleLows
     call  displayTempArray
 
-    ; --- displayTempWithString: average high ---
+    ; --- displayTempWithString: averages ---
     call  CrLf
     mov   eax, averageHigh
     push  eax
     push  OFFSET titleAvgH
     call  displayTempWithString
 
-    ; --- displayTempWithString: average low ---
     call  CrLf
     mov   eax, averageLow
     push  eax
     push  OFFSET titleAvgL
     call  displayTempWithString
+
+    ; --- Ask user to run again ---
+    call  CrLf
+    mov   edx, OFFSET promptAgain
+    call  WriteString
+    call  ReadChar               ; reads one char into AL, echoes it
+    call  CrLf
+
+    ; If 'y' or 'Y', loop again
+    cmp   al, 'y'
+    je    mainLoop
+    cmp   al, 'Y'
+    je    mainLoop
 
     ; --- Farewell ---
     call  CrLf
@@ -156,17 +179,22 @@ main ENDP
 
 ; =======================================================================
 ; Procedure: printGreeting
-; Description: Displays program title, programmer name, extra-credit
-;              notice, and a multi-line description of program functionality.
-; Receives:   [EBP+8]  = reference to intro1 (title / programmer)
-;             [EBP+12] = reference to intro2 (EC notice)
-;             [EBP+16] = reference to intro3
-;             [EBP+20] = reference to intro4
-;             [EBP+24] = reference to intro5
-;             [EBP+28] = reference to intro6
-; Returns:    nothing (output to console)
-; Pre-conditions:  All 6 parameters reference null-terminated strings.
-; Post-conditions: Six lines printed; followed by a blank line.
+; Description: Displays program title, EC notices, and functionality desc.
+;              Format matches required EC output spec:
+;                Title
+;                **EC: notice 1
+;                **EC: notice 2 (continued lines)
+;                (blank line)
+;                Description lines
+; Receives:   [EBP+8]  = intro1 (title)
+;             [EBP+12] = intro2 (EC1 notice)
+;             [EBP+16] = intro3 (EC2 notice line 1)
+;             [EBP+20] = intro4 (EC2 notice line 2)
+;             [EBP+24] = intro5 (EC2 notice line 3)
+;             [EBP+28] = intro6 (description line 1)
+;             [EBP+32] = intro7 (description line 2)
+;             [EBP+36] = intro8 (description line 3)
+; Returns:    nothing
 ; Registers changed: EDX (saved/restored)
 ; =======================================================================
 printGreeting PROC
@@ -174,14 +202,15 @@ printGreeting PROC
     mov   ebp, esp
     push  edx
 
+    ; Title
     call  CrLf
     mov   edx, [ebp+8]
     call  WriteString
     call  CrLf
 
+    ; EC notices (immediately after title, no blank line between)
     mov   edx, [ebp+12]
     call  WriteString
-    call  CrLf
     call  CrLf
 
     mov   edx, [ebp+16]
@@ -196,49 +225,123 @@ printGreeting PROC
     call  WriteString
     call  CrLf
 
+    ; Blank line between EC notices and description
+    call  CrLf
+
+    ; Description
     mov   edx, [ebp+28]
+    call  WriteString
+    call  CrLf
+
+    mov   edx, [ebp+32]
+    call  WriteString
+    call  CrLf
+
+    mov   edx, [ebp+36]
     call  WriteString
     call  CrLf
     call  CrLf
 
     pop   edx
     pop   ebp
-    ret   24                         ; 6 DWORD params = 24 bytes
+    ret   32                         ; 8 DWORD params = 32 bytes
 printGreeting ENDP
 
 ; =======================================================================
 ; Procedure: generateTemperatures
-; Description: Fills tempArray with ARRAYSIZE pseudo-random integers in
-;              the inclusive range [MIN_TEMP, MAX_TEMP]. Readings are
-;              stored in row-major order: rows = days, columns = readings.
+; Description: **EC2** Fills tempArray using a diurnal cycle. Each day the
+;              temperature rises from the start toward midday (slot MID_SLOT)
+;              then falls toward end of day. A random delta [1, MAX_DELTA] is
+;              added or subtracted each slot (direction determined by phase).
+;              Values are clamped to [MIN_TEMP, MAX_TEMP]. Days chain: the
+;              first reading of day N+1 equals the last reading of day N.
+;
+;              Algorithm per slot:
+;                phase = rising  if slot < MID_SLOT
+;                phase = falling if slot >= MID_SLOT
+;                delta = RandomRange(MAX_DELTA) + 1   ; [1, MAX_DELTA]
+;                rising:  new = prev + delta; if > MAX_TEMP -> new = MAX_TEMP
+;                falling: new = prev - delta; if < MIN_TEMP -> new = MIN_TEMP
+;
 ; Receives:   [EBP+8] = reference to tempArray (output)
-; Returns:    tempArray populated.
-; Pre-conditions:  Randomize has been called. tempArray >= ARRAYSIZE DWORDs.
-; Post-conditions: Every element of tempArray is in [MIN_TEMP, MAX_TEMP].
-; Registers changed: EAX, ECX, EDI (saved/restored)
-; Uses globals: MIN_TEMP, MAX_TEMP, ARRAYSIZE
+; Returns:    tempArray populated with diurnal-cycle readings.
+; Pre-conditions:  Randomize called. Array >= ARRAYSIZE DWORDs.
+; Post-conditions: Every element in [MIN_TEMP, MAX_TEMP].
+; Registers changed: EAX, EBX, ECX, EDX, ESI (saved/restored)
+; Uses globals: MIN_TEMP, MAX_TEMP, DAYS_MEASURED, TEMPS_PER_DAY,
+;               MID_SLOT, MAX_DELTA
 ; =======================================================================
 generateTemperatures PROC
     push  ebp
     mov   ebp, esp
     push  eax
+    push  ebx
     push  ecx
-    push  edi
+    push  edx
+    push  esi
 
-    mov   edi, [ebp+8]               ; EDI -> tempArray (register indirect)
-    mov   ecx, ARRAYSIZE
+    mov   esi, [ebp+8]               ; ESI -> tempArray
 
-genLoop:
-    ; RandomRange(n) returns [0, n-1]; add MIN_TEMP to shift the range.
-    mov   eax, (MAX_TEMP - MIN_TEMP + 1)
-    call  RandomRange                ; EAX in [0, MAX-MIN]
-    add   eax, MIN_TEMP              ; EAX in [MIN_TEMP, MAX_TEMP]
-    mov   [edi], eax                 ; store via register indirect
-    add   edi, 4
-    loop  genLoop
+    ; Seed the very first temperature near the low end of the range
+    ; Use RandomRange(TEMP_RANGE/3)+MIN_TEMP so day 1 starts cool
+    mov   eax, (TEMP_RANGE / 3 + 1)
+    call  RandomRange
+    add   eax, MIN_TEMP              ; starting temp in lower third
+    mov   ebx, eax                  ; EBX = "current temperature" across all days
 
-    pop   edi
+    mov   edx, DAYS_MEASURED        ; EDX = day counter (outer loop)
+
+dayLoop:
+    ; ECX = slot index within day (0 .. TEMPS_PER_DAY-1)
+    xor   ecx, ecx
+
+slotLoop:
+    ; Store current temperature
+    mov   [esi], ebx
+    add   esi, 4
+
+    ; Determine if this is the last slot of the day
+    mov   eax, ecx
+    inc   eax
+    cmp   eax, TEMPS_PER_DAY
+    je    nextSlotDone              ; don't compute next temp on last slot of day
+
+    ; Generate random delta [1, MAX_DELTA]
+    mov   eax, MAX_DELTA
+    call  RandomRange               ; EAX in [0, MAX_DELTA-1]
+    inc   eax                       ; EAX in [1, MAX_DELTA]
+
+    ; Determine phase: rising if ecx < MID_SLOT, else falling
+    cmp   ecx, MID_SLOT
+    jge   fallingPhase
+
+risingPhase:
+    add   ebx, eax                  ; temp rises
+    cmp   ebx, MAX_TEMP
+    jle   phaseDone
+    mov   ebx, MAX_TEMP             ; clamp to ceiling
+    jmp   phaseDone
+
+fallingPhase:
+    sub   ebx, eax                  ; temp falls
+    cmp   ebx, MIN_TEMP
+    jge   phaseDone
+    mov   ebx, MIN_TEMP             ; clamp to floor
+
+phaseDone:
+nextSlotDone:
+    inc   ecx
+    cmp   ecx, TEMPS_PER_DAY
+    jl    slotLoop
+    ; EBX already holds end-of-day temp; next day chains from it
+
+    dec   edx
+    jnz   dayLoop
+
+    pop   esi
+    pop   edx
     pop   ecx
+    pop   ebx
     pop   eax
     pop   ebp
     ret   4
@@ -246,13 +349,11 @@ generateTemperatures ENDP
 
 ; =======================================================================
 ; Procedure: findDailyHighs
-; Description: Iterates over each day's TEMPS_PER_DAY readings in
-;              tempArray and writes the daily maximum to dailyHighs.
+; Description: Iterates over each day's TEMPS_PER_DAY readings and writes
+;              the daily maximum to dailyHighs.
 ; Receives:   [EBP+8]  = reference to tempArray  (input)
 ;             [EBP+12] = reference to dailyHighs (output)
-; Returns:    dailyHighs[i] = maximum of tempArray row i.
-; Pre-conditions:  tempArray is fully populated.
-; Post-conditions: dailyHighs populated; tempArray unchanged.
+; Returns:    dailyHighs[i] = max of tempArray row i.
 ; Registers changed: EAX, EBX, ECX, EDX, ESI, EDI (saved/restored)
 ; Uses globals: DAYS_MEASURED, TEMPS_PER_DAY
 ; =======================================================================
@@ -266,13 +367,13 @@ findDailyHighs PROC
     push  esi
     push  edi
 
-    mov   esi, [ebp+8]               ; ESI -> tempArray
-    mov   edi, [ebp+12]              ; EDI -> dailyHighs
+    mov   esi, [ebp+8]
+    mov   edi, [ebp+12]
     mov   edx, DAYS_MEASURED
 
 outerHighLoop:
     mov   ecx, TEMPS_PER_DAY
-    mov   eax, [esi]                 ; seed max with first reading of the day
+    mov   eax, [esi]
     add   esi, 4
     dec   ecx
 
@@ -285,7 +386,7 @@ notHigher:
     add   esi, 4
     loop  innerHighLoop
 
-    mov   [edi], eax                 ; store daily maximum
+    mov   [edi], eax
     add   edi, 4
     dec   edx
     jnz   outerHighLoop
@@ -302,13 +403,11 @@ findDailyHighs ENDP
 
 ; =======================================================================
 ; Procedure: findDailyLows
-; Description: Iterates over each day's TEMPS_PER_DAY readings in
-;              tempArray and writes the daily minimum to dailyLows.
-; Receives:   [EBP+8]  = reference to tempArray (input)
-;             [EBP+12] = reference to dailyLows (output)
-; Returns:    dailyLows[i] = minimum of tempArray row i.
-; Pre-conditions:  tempArray is fully populated.
-; Post-conditions: dailyLows populated; tempArray unchanged.
+; Description: Iterates over each day's TEMPS_PER_DAY readings and writes
+;              the daily minimum to dailyLows.
+; Receives:   [EBP+8]  = reference to tempArray  (input)
+;             [EBP+12] = reference to dailyLows  (output)
+; Returns:    dailyLows[i] = min of tempArray row i.
 ; Registers changed: EAX, EBX, ECX, EDX, ESI, EDI (saved/restored)
 ; Uses globals: DAYS_MEASURED, TEMPS_PER_DAY
 ; =======================================================================
@@ -322,13 +421,13 @@ findDailyLows PROC
     push  esi
     push  edi
 
-    mov   esi, [ebp+8]               ; ESI -> tempArray
-    mov   edi, [ebp+12]              ; EDI -> dailyLows
+    mov   esi, [ebp+8]
+    mov   edi, [ebp+12]
     mov   edx, DAYS_MEASURED
 
 outerLowLoop:
     mov   ecx, TEMPS_PER_DAY
-    mov   eax, [esi]                 ; seed min with first reading of the day
+    mov   eax, [esi]
     add   esi, 4
     dec   ecx
 
@@ -341,7 +440,7 @@ notLower:
     add   esi, 4
     loop  innerLowLoop
 
-    mov   [edi], eax                 ; store daily minimum
+    mov   [edi], eax
     add   edi, 4
     dec   edx
     jnz   outerLowLoop
@@ -358,17 +457,12 @@ findDailyLows ENDP
 
 ; =======================================================================
 ; Procedure: calcAverageLowHighTemps
-; Description: Sums each of the DAYS_MEASURED-element dailyHighs and
-;              dailyLows arrays and computes a truncated integer average
-;              for each, writing results through caller-supplied references.
+; Description: Computes truncated average of dailyHighs and dailyLows.
 ; Receives:   [EBP+8]  = reference to dailyHighs  (input)
 ;             [EBP+12] = reference to dailyLows   (input)
 ;             [EBP+16] = reference to averageHigh (output)
 ;             [EBP+20] = reference to averageLow  (output)
 ; Returns:    *averageHigh and *averageLow updated.
-; Pre-conditions:  dailyHighs and dailyLows are fully populated.
-; Post-conditions: *averageHigh = floor(sum(dailyHighs) / DAYS_MEASURED)
-;                  *averageLow  = floor(sum(dailyLows)  / DAYS_MEASURED)
 ; Registers changed: EAX, EBX, ECX, EDX, ESI, EDI (saved/restored)
 ; Uses globals: DAYS_MEASURED
 ; =======================================================================
@@ -383,7 +477,7 @@ calcAverageLowHighTemps PROC
     push  edi
 
     ; -- Average high --
-    mov   esi, [ebp+8]               ; ESI -> dailyHighs
+    mov   esi, [ebp+8]
     mov   ecx, DAYS_MEASURED
     xor   eax, eax
 
@@ -394,12 +488,12 @@ sumHighLoop:
 
     xor   edx, edx
     mov   ebx, DAYS_MEASURED
-    div   ebx                        ; EAX = truncated average high
+    div   ebx
     mov   edi, [ebp+16]
     mov   [edi], eax
 
     ; -- Average low --
-    mov   esi, [ebp+12]              ; ESI -> dailyLows
+    mov   esi, [ebp+12]
     mov   ecx, DAYS_MEASURED
     xor   eax, eax
 
@@ -410,7 +504,7 @@ sumLowLoop:
 
     xor   edx, edx
     mov   ebx, DAYS_MEASURED
-    div   ebx                        ; EAX = truncated average low
+    div   ebx
     mov   edi, [ebp+20]
     mov   [edi], eax
 
@@ -426,34 +520,15 @@ calcAverageLowHighTemps ENDP
 
 ; =======================================================================
 ; Procedure: displayTempArray
-; Description: Displays a 2D array of DWORD temperatures preceded by a
-;              descriptive title. Prints someRows rows, each with
-;              someColumns values separated by two spaces. Works for any
-;              valid row/column count including a single-row array.
-;
-;              EC usage: when called for the full temperature grid, main
-;              passes rows = TEMPS_PER_DAY and columns = DAYS_MEASURED so
-;              each printed row is one time slot across all days (i.e., each
-;              column of output corresponds to one day). The data in tempArray
-;              is stored row-major (row = day), so we must transpose on the fly:
-;              element [day * TEMPS_PER_DAY + slot] is read by computing an
-;              offset from the array base using base+offset addressing.
-;              For the daily high/low arrays (single row, no transposition
-;              needed), the procedure simply reads sequentially.
-;
-;              The procedure detects the transposed case when
-;              someRows == TEMPS_PER_DAY AND someColumns == DAYS_MEASURED.
-;              In that case it accesses element [col * TEMPS_PER_DAY + row]
-;              instead of the sequential [row * someColumns + col] order.
-;
-; Receives:   [EBP+8]  = reference to someTitle  (input)
-;             [EBP+12] = reference to someArray  (input)
-;             [EBP+16] = someRows    (value, input)
-;             [EBP+20] = someColumns (value, input)
-; Returns:    nothing (output to console)
-; Pre-conditions:  someArray holds at least someRows * someColumns DWORDs.
-; Post-conditions: Array printed to console in requested layout.
-; Registers changed: EAX, EBX, ECX, EDX, ESI (saved/restored)
+; Description: Prints a title then a 2-D array someRows x someColumns.
+;              EC1: when called with rows=TEMPS_PER_DAY, cols=DAYS_MEASURED
+;              the array is transposed on-the-fly so each column = one day.
+; Receives:   [EBP+8]  = reference to someTitle
+;             [EBP+12] = reference to someArray
+;             [EBP+16] = someRows    (value)
+;             [EBP+20] = someColumns (value)
+; Returns:    nothing
+; Registers changed: EAX, EBX, ECX, EDX, ESI, EDI (saved/restored)
 ; =======================================================================
 displayTempArray PROC
     push  ebp
@@ -465,14 +540,11 @@ displayTempArray PROC
     push  esi
     push  edi
 
-    ; Print title
     call  CrLf
-    mov   edx, [ebp+8]               ; someTitle
+    mov   edx, [ebp+8]
     call  WriteString
     call  CrLf
 
-    ; Determine whether to transpose (EC path) or print sequentially.
-    ; Transpose when: someRows == TEMPS_PER_DAY  AND  someColumns == DAYS_MEASURED
     mov   eax, [ebp+16]              ; someRows
     mov   ebx, [ebp+20]              ; someColumns
     cmp   eax, TEMPS_PER_DAY
@@ -480,31 +552,25 @@ displayTempArray PROC
     cmp   ebx, DAYS_MEASURED
     jne   normalPrint
 
-    ; ----------------------------------------------------------------
-    ; TRANSPOSED PRINT  (EC: column = day, row = time slot)
-    ; For row r, col c: element index = c * TEMPS_PER_DAY + r
-    ; ESI = base of array; EBX = outer row counter; ECX = inner col counter
-    ; ----------------------------------------------------------------
-    mov   esi, [ebp+12]              ; ESI -> base of someArray
-    mov   ebx, TEMPS_PER_DAY        ; outer loop: time-slot rows
+    ; ---- TRANSPOSED PRINT (EC1) ----
+    mov   esi, [ebp+12]
+    mov   ebx, TEMPS_PER_DAY
 
 transRowLoop:
-    mov   ecx, DAYS_MEASURED        ; inner loop: day columns
+    mov   ecx, DAYS_MEASURED
     mov   eax, TEMPS_PER_DAY
-    sub   eax, ebx                  ; EAX = current row index r (0-based)
-    push  eax                       ; save r on stack
+    sub   eax, ebx                   ; row index r
+    push  eax
 
 transColLoop:
-    ; current col index c = DAYS_MEASURED - ecx  (ECX counts down)
     mov   eax, DAYS_MEASURED
-    sub   eax, ecx                  ; EAX = col index c
-    ; element index = c * TEMPS_PER_DAY + r
-    imul  eax, TEMPS_PER_DAY        ; EAX = c * TEMPS_PER_DAY
-    mov   edi, [esp]                ; EDI = r  (peek at saved r)
-    add   eax, edi                  ; EAX = c * TEMPS_PER_DAY + r
-    shl   eax, 2                    ; byte offset = index * 4
-    add   eax, esi                  ; EAX = &someArray[c*TEMPS_PER_DAY + r]
-    mov   eax, [eax]                ; load element via base+offset
+    sub   eax, ecx                   ; col index c
+    imul  eax, TEMPS_PER_DAY         ; c * TEMPS_PER_DAY
+    mov   edi, [esp]                 ; r
+    add   eax, edi                   ; index = c*TEMPS_PER_DAY + r
+    shl   eax, 2
+    add   eax, esi
+    mov   eax, [eax]
     call  WriteDec
 
     dec   ecx
@@ -514,28 +580,24 @@ transColLoop:
     jmp   transColLoop
 
 transEndCol:
-    pop   eax                       ; discard saved r
+    pop   eax
     call  CrLf
     dec   ebx
     jnz   transRowLoop
-
     jmp   doneDisplay
 
-    ; ----------------------------------------------------------------
-    ; NORMAL (SEQUENTIAL) PRINT  -- used for dailyHighs / dailyLows
-    ; ----------------------------------------------------------------
+    ; ---- NORMAL SEQUENTIAL PRINT ----
 normalPrint:
-    mov   esi, [ebp+12]              ; ESI -> someArray (register indirect base)
-    mov   ebx, [ebp+16]              ; EBX = someRows
+    mov   esi, [ebp+12]
+    mov   ebx, [ebp+16]
 
 normalRowLoop:
-    mov   ecx, [ebp+20]              ; ECX = someColumns
+    mov   ecx, [ebp+20]
 
 normalColLoop:
-    mov   eax, [esi]                 ; load element via register indirect
+    mov   eax, [esi]
     call  WriteDec
     add   esi, 4
-
     dec   ecx
     jz    normalEndCol
     mov   edx, OFFSET twoSpaces
@@ -561,13 +623,10 @@ displayTempArray ENDP
 
 ; =======================================================================
 ; Procedure: displayTempWithString
-; Description: Prints a null-terminated title string immediately followed
-;              by a decimal integer value on the same line, then a newline.
-; Receives:   [EBP+8]  = reference to someTitle (input)
-;             [EBP+12] = someValue (value, input)
+; Description: Prints a title string immediately followed by a decimal value.
+; Receives:   [EBP+8]  = reference to someTitle
+;             [EBP+12] = someValue (by value)
 ; Returns:    nothing
-; Pre-conditions:  someTitle references a null-terminated string.
-; Post-conditions: Output line: "<title><value>" + newline.
 ; Registers changed: EAX, EDX (saved/restored)
 ; =======================================================================
 displayTempWithString PROC
@@ -576,9 +635,9 @@ displayTempWithString PROC
     push  eax
     push  edx
 
-    mov   edx, [ebp+8]               ; someTitle
+    mov   edx, [ebp+8]
     call  WriteString
-    mov   eax, [ebp+12]              ; someValue (by value)
+    mov   eax, [ebp+12]
     call  WriteDec
     call  CrLf
 
